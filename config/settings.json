@@ -1,0 +1,17 @@
+{
+    "yolo_model": "yolov8n.pt",
+    "pose_model": "yolov8n-pose.pt",
+    "use_pose_tracking": true,
+    "confidence_threshold": 0.35,
+    "processing_timeout_sec": 15,
+    "zone3_buffer_timeout_sec": 15,
+    "inactivity_timeout_sec": 900,
+    "debounce_frames": 5,
+    "pose_debounce_frames": 3,
+    "target_classes": ["person", "cup", "bottle", "cell phone", "mouse", "remote", "vase", "bowl", "handbag", "suitcase"],
+    "part_classes": ["cup", "bottle", "cell phone", "mouse", "remote", "vase", "bowl"],
+    "person_classes": ["person"],
+    "tracker_max_age": 30,
+    "frame_skip": 2,
+    "iou_threshold": 0.45
+}
