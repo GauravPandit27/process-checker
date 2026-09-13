@@ -339,8 +339,18 @@ with tab_monitor:
                     event.event_type,
                     event.part_id,
                     event.class_name,
-                    event.zone_id
+                    event.zone_id,
+                    event.details
                 )
+                
+            hand = operator_pose.active_hand
+            if hand is None:
+                for h in [operator_pose.left_hand, operator_pose.right_hand]:
+                    if h.is_valid and h.current_zone:
+                        hand = h
+                        break
+            active_zone = hand.current_zone if hand else None
+            state_machine.update(active_zone)
                 
             # 4. Display
             annotated = draw_overlay(frame, operator_pose, zone_manager)

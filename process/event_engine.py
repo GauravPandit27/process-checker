@@ -22,6 +22,7 @@ class EventType:
     HAND_ENTERED_ZONE_1 = "HAND_ENTERED_ZONE_1"
     HAND_ENTERED_ZONE_2 = "HAND_ENTERED_ZONE_2"
     HAND_LEFT_ZONE_2 = "HAND_LEFT_ZONE_2"
+    HAND_ENTERED_BUFFER = "HAND_ENTERED_BUFFER"
     HAND_ENTERED_ZONE_3 = "HAND_ENTERED_ZONE_3"
     DOUBLE_PROCESSING_DETECTED = "DOUBLE_PROCESSING_DETECTED"
 
@@ -134,6 +135,8 @@ class EventEngine:
                     break
 
         current_zone = hand.current_zone if hand else None
+        
+        self.latest_y = hand.smoothed_position[1] if hand and hand.smoothed_position else None
 
         # ---------------------------------------------------------
         # Debounce logic: The zone must be consistent for N frames
@@ -149,7 +152,8 @@ class EventEngine:
             self._candidate_frames = 1
 
         # Only process events if the candidate zone is confirmed (debounced)
-        if self._candidate_frames >= self.debounce_frames:
+        required_frames = 1 if self._candidate_zone == "buffer_zone" else self.debounce_frames
+        if self._candidate_frames >= required_frames:
             confirmed_zone = self._candidate_zone
             
             # Check if hand entered a NEW confirmed zone
@@ -246,7 +250,7 @@ class EventEngine:
                     part_id=self._cycle_id,
                     zone_id="zone_3",
                     class_name="operator_hand",
-                    details={"frame": self._frame_count}
+                    details={"frame": self._frame_count, "y": self.latest_y}
                 )
                 
                 # Critical: Clear memory so the next cycle can begin fresh!
@@ -254,6 +258,16 @@ class EventEngine:
                 self._last_hand_zone = None
                 
                 return event
+                
+        elif current_zone == "buffer_zone":
+            # Allow buffer zone to fire multiple times so we catch the exit after picking!
+            return ProcessEvent(
+                event_type=EventType.HAND_ENTERED_BUFFER,
+                part_id=self._cycle_id,
+                zone_id="buffer_zone",
+                class_name="operator_hand",
+                details={"frame": self._frame_count, "y": self.latest_y}
+            )
 
         return None
 

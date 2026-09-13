@@ -73,6 +73,45 @@ class ZoneManager:
                 )
                 self.zones[zone_id] = zone
 
+            if "zone_2" in self.zones and "zone_3" in self.zones:
+                z2_pts = self.zones["zone_2"].points
+                z3_pts = self.zones["zone_3"].points
+                if len(z2_pts) > 0 and len(z3_pts) > 0:
+                    z2_x, z2_y, z2_w, z2_h = cv2.boundingRect(z2_pts)
+                    z3_x, z3_y, z3_w, z3_h = cv2.boundingRect(z3_pts)
+                    
+                    z2_max_y = z2_y + z2_h
+                    z3_max_y = z3_y + z3_h
+                    
+                    if z2_y > z3_max_y:
+                        y_top = z3_max_y
+                        y_bottom = z2_y
+                    else:
+                        y_top = z2_max_y
+                        y_bottom = z3_y
+                        
+                    if y_bottom - y_top < 5:
+                        mid_y = (y_top + y_bottom) // 2
+                        y_top = mid_y - 10
+                        y_bottom = mid_y + 10
+                        
+                    x_min = min(z2_x, z3_x)
+                    x_max = max(z2_x + z2_w, z3_x + z3_w)
+                    
+                    buffer_points = [
+                        [int(x_min), int(y_top)],
+                        [int(x_max), int(y_top)],
+                        [int(x_max), int(y_bottom)],
+                        [int(x_min), int(y_bottom)]
+                    ]
+                    
+                    self.zones["buffer_zone"] = Zone(
+                        zone_id="buffer_zone",
+                        name="Buffer Zone",
+                        points=buffer_points,
+                        color=(200, 100, 200)
+                    )
+
             self.config_path = config_path
         except Exception as e:
             raise RuntimeError(f"Failed to load zone config from '{config_path}': {e}")
@@ -85,6 +124,8 @@ class ZoneManager:
 
         config = {}
         for zone_id, zone in self.zones.items():
+            if zone_id == "buffer_zone":
+                continue
             config[zone_id] = {
                 "name": zone.name,
                 "color": list(zone.color),
@@ -120,7 +161,15 @@ class ZoneManager:
         Returns:
             Zone object if point is in a zone, None otherwise
         """
+        # Prioritize buffer zone if there is overlap
+        if "buffer_zone" in self.zones:
+            bz = self.zones["buffer_zone"]
+            if len(bz.points) >= 3 and bz.contains_point(x, y):
+                return bz
+                
         for zone_id, zone in self.zones.items():
+            if zone_id == "buffer_zone":
+                continue
             if len(zone.points) >= 3 and zone.contains_point(x, y):
                 return zone
         return None
