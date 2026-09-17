@@ -39,6 +39,8 @@ class ProcessStateMachine:
         self.total_completed = 0
         self.is_warning = False
         self.warning_reason = ""
+        self.pre_warning_state = None
+        self.pre_warning_cycle_state = None
         
     def reset(self):
         self.current_state = ProcessState.IDLE
@@ -46,17 +48,31 @@ class ProcessStateMachine:
         self.zone_2_placed_time = 0
         self.is_warning = False
         self.warning_reason = ""
+        self.pre_warning_state = None
+        self.pre_warning_cycle_state = None
 
     def manual_reset(self):
-        """Reset after a warning — clears the warning and returns to IDLE."""
+        """Reset after a warning — clears the warning and resumes from previous state."""
         self.is_warning = False
         self.warning_reason = ""
-        self.current_state = ProcessState.IDLE
-        self.active_cycle = None
-        self.zone_2_placed_time = 0
+        
+        # Restore previous states to resume process
+        if self.pre_warning_state:
+            self.current_state = self.pre_warning_state
+            
+        if self.active_cycle and self.pre_warning_cycle_state:
+            self.active_cycle.state = self.pre_warning_cycle_state
+            
+        self.pre_warning_state = None
+        self.pre_warning_cycle_state = None
 
     def _trigger_warning(self, reason):
         """Trigger a warning state that pauses processing until manual reset."""
+        if not self.is_warning: # Only save state if not already in warning
+            self.pre_warning_state = self.current_state
+            if self.active_cycle:
+                self.pre_warning_cycle_state = self.active_cycle.state
+                
         self.is_warning = True
         self.warning_reason = reason
         self.current_state = ProcessState.WARNING
