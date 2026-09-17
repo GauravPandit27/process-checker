@@ -62,6 +62,13 @@ st.markdown("""
         animation: pulse 1s infinite alternate;
     }
     
+    .status-error {
+        background-color: #e74c3c;
+        border-color: #c0392b;
+        color: white;
+        box-shadow: 0 0 15px rgba(231, 76, 60, 0.5);
+    }
+    
     @keyframes pulse {
         from { box-shadow: 0 0 5px rgba(243, 156, 18, 0.5); }
         to { box-shadow: 0 0 20px rgba(243, 156, 18, 0.8); }
@@ -82,10 +89,10 @@ st.markdown("""
 # -------------------------------------------------------------------
 @st.cache_resource
 def init_system():
-    zone_manager = ZoneManager(os.path.join("config", "zones.json"))
+    zone_manager = ZoneManager(os.path.join("config", "zones.json"), zone_padding=20)
     pose_detector = PoseDetector(model_path="yolov8n-pose.pt", confidence=0.35)
-    state_machine = ProcessStateMachine()
-    event_engine = EventEngine(debounce_frames=7)
+    state_machine = ProcessStateMachine(cycle_timeout=30)
+    event_engine = EventEngine(debounce_frames=3, grace_frames=2)
     return zone_manager, pose_detector, state_machine, event_engine
 
 zone_manager, pose_detector, state_machine, event_engine = init_system()
@@ -94,6 +101,14 @@ if "running" not in st.session_state:
     st.session_state.running = False
 if "video_path" not in st.session_state:
     st.session_state.video_path = "WhatsApp Video 2026-09-10 at 4.04.34 PM.mp4"
+if "error_state" not in st.session_state:
+    st.session_state.error_state = False
+if "last_frame" not in st.session_state:
+    st.session_state.last_frame = None
+if "frame_pos" not in st.session_state:
+    st.session_state.frame_pos = 0
+if "timeout_warning" not in st.session_state:
+    st.session_state.timeout_warning = False
 
 # -------------------------------------------------------------------
 # Helper: Get First Frame
@@ -113,7 +128,10 @@ st.title("🏭 Live Process Monitor")
 
 video_options = {
     "Default Video (WhatsApp)": "WhatsApp Video 2026-09-10 at 4.04.34 PM.mp4",
-    "Demo Video": "../demo.mp4"
+    "Demo Video": "../demo.mp4",
+    "Wrong Demo Video": "../wrong_demo.mp4",
+    "Wrong Demo 2": "../wrong_demo2.mp4",
+    "Wrong Demo 3": "../wrond_demo3.mp4"
 }
 selected_video = st.selectbox("Select Camera Feed", list(video_options.keys()))
 st.session_state.video_path = video_options[selected_video]
@@ -125,7 +143,10 @@ tab_monitor, tab_draw = st.tabs(["📊 Monitoring Dashboard", "📐 Draw Zones"]
 # ==========================================
 with tab_draw:
     st.markdown("### Drag & Drop Zone Editor")
-    st.write("Draw exactly **3 rectangles** on the frame below. The system will auto-assign them by size or you can redraw them.")
+    st.info("💡 **How it works:** Draw exactly 3 rectangles. The system automatically sorts them from bottom to top:\n"
+            "- **Bottom Rectangle** = Zone 1 (Input/Pick-up)\n"
+            "- **Middle Rectangle** = Zone 2 (Processing)\n"
+            "- **Top Rectangle** = Zone 3 (Output/Drop-off)")
     
     bg_image = get_first_frame(st.session_state.video_path)
     pil_image = Image.fromarray(bg_image)
@@ -146,8 +167,10 @@ with tab_draw:
         if canvas_result.json_data is not None:
             objects = canvas_result.json_data["objects"]
             if len(objects) == 3:
-                # Assuming the user draws them in order: Zone 1, Zone 2, Zone 3
-                # Or we just save them in the order drawn
+                # Sort objects from bottom to top (highest Y to lowest Y)
+                # Zone 1 is at the bottom (highest Y), Zone 3 is at the top (lowest Y)
+                objects = sorted(objects, key=lambda x: x["top"], reverse=True)
+                
                 scale_x = bg_image.shape[1] / (bg_image.shape[1] // 2)
                 scale_y = bg_image.shape[0] / (bg_image.shape[0] // 2)
                 
@@ -181,7 +204,13 @@ with tab_draw:
                     json.dump(zone_config, f, indent=4)
                 
                 zone_manager.load_zones(zone_config_path)
-                st.success("Successfully saved 3 zones!")
+                st.success(
+                    "✅ Successfully saved 3 zones!\n\n"
+                    "Assigned based on position:\n"
+                    f"- **Zone 3 (Top)**: {objects[2]['width']}x{objects[2]['height']}\n"
+                    f"- **Zone 2 (Middle)**: {objects[1]['width']}x{objects[1]['height']}\n"
+                    f"- **Zone 1 (Bottom)**: {objects[0]['width']}x{objects[0]['height']}"
+                )
             else:
                 st.error(f"Please draw exactly 3 zones. You drew {len(objects)}.")
 
@@ -203,18 +232,49 @@ with tab_monitor:
         st.markdown("### 🎮 Controls")
         
         col_btn1, col_btn2 = st.columns(2)
-        if col_btn1.button("▶️ Start Stream", use_container_width=True, type="primary"):
+        if col_btn1.button("▶️ Start Stream", width="stretch", type="primary"):
+            st.session_state.error_state = False
+            st.session_state.timeout_warning = False
+            st.session_state.frame_pos = 0
             st.session_state.running = True
             state_machine.reset()
             event_engine.reset()
             st.rerun()
             
-        if col_btn2.button("⏹️ Stop Stream", use_container_width=True):
+        if col_btn2.button("⏹️ Stop Stream", width="stretch"):
             st.session_state.running = False
             st.rerun()
 
     with col_video:
-        video_placeholder = st.empty()
+        if st.session_state.error_state:
+            st.error("🚨 PROCESS BROKEN: Hand returned to Zone 1 before completing the cycle! 🚨", icon="🚫")
+            if st.session_state.last_frame is not None:
+                error_frame = st.session_state.last_frame.copy()
+                cv2.putText(error_frame, "PROCESS BROKEN", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 8)
+                st.image(error_frame, width="stretch")
+                
+            if st.button("🔄 Manual Reset", type="primary", width="stretch"):
+                st.session_state.error_state = False
+                state_machine.reset()
+                event_engine.reset()
+                st.session_state.running = True
+                st.rerun()
+                
+        elif st.session_state.timeout_warning:
+            st.warning("⏰ TIMEOUT: Cycle has been stuck for over 30 seconds. The system may have lost track of the hand.", icon="⚠️")
+            if st.session_state.last_frame is not None:
+                timeout_frame = st.session_state.last_frame.copy()
+                cv2.putText(timeout_frame, "TIMEOUT WARNING", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 165, 255), 8)
+                st.image(timeout_frame, width="stretch")
+                
+            if st.button("🔄 Reset & Continue", type="primary", width="stretch"):
+                st.session_state.timeout_warning = False
+                state_machine.reset()
+                event_engine.reset()
+                st.session_state.running = True
+                st.rerun()
+        else:
+            video_placeholder = st.empty()
 
     # -------------------------------------------------------------------
     # Drawing Helpers
@@ -242,7 +302,7 @@ with tab_monitor:
                     else:
                         cv2.circle(annotated, (int(x), int(y)), 4, (0, 255, 0), -1)
             
-            # Identify active zone for display
+            # Identify active zone for display (single lookup, no duplication)
             hand = operator_pose.active_hand
             if hand is None:
                 for h in [operator_pose.left_hand, operator_pose.right_hand]:
@@ -273,6 +333,8 @@ with tab_monitor:
         # Cycle Header
         if cycle.is_complete:
             cycle_header.markdown(f'<div class="cycle-header" style="color:#27ae60;">Cycle {cycle.part_id} Complete!</div>', unsafe_allow_html=True)
+        elif current == ProcessState.TIMEOUT_WARNING:
+            cycle_header.markdown(f'<div class="cycle-header" style="color:#e67e22;">⏰ Cycle {cycle.part_id} Timed Out</div>', unsafe_allow_html=True)
         else:
             cycle_header.markdown(f'<div class="cycle-header">Cycle {cycle.part_id} Active</div>', unsafe_allow_html=True)
         
@@ -283,10 +345,8 @@ with tab_monitor:
             st_input.markdown('<div class="status-box">📥 Zone 1 Input</div>', unsafe_allow_html=True)
             
         # Processing Status
-        if current in (ProcessState.ZONE_2_PICKED, ProcessState.COMPLETED) or cycle.is_complete:
-            st_process.markdown('<div class="status-box status-done">⚙️ Zone 2 Picked Up</div>', unsafe_allow_html=True)
-        elif current == ProcessState.ZONE_2_PLACED:
-            st_process.markdown('<div class="status-box status-active">⚙️ Placed (Processing...)</div>', unsafe_allow_html=True)
+        if current in (ProcessState.ZONE_2_PLACED, ProcessState.ZONE_2_PICKED, ProcessState.COMPLETED) or cycle.is_complete:
+            st_process.markdown('<div class="status-box status-done">⚙️ Zone 2 Complete</div>', unsafe_allow_html=True)
         elif current == ProcessState.ZONE_1_STARTED:
             st_process.markdown('<div class="status-box status-active">⚙️ Waiting for Zone 2...</div>', unsafe_allow_html=True)
         else:
@@ -303,7 +363,7 @@ with tab_monitor:
     # -------------------------------------------------------------------
     # Main Loop
     # -------------------------------------------------------------------
-    if st.session_state.running:
+    if st.session_state.running and not st.session_state.error_state and not st.session_state.timeout_warning:
         video_path = st.session_state.video_path
         
         if not os.path.exists(video_path):
@@ -312,6 +372,9 @@ with tab_monitor:
             st.rerun()
             
         cap = cv2.VideoCapture(video_path)
+        if st.session_state.get("frame_pos", 0) > 0 and isinstance(video_path, str) and not video_path.isdigit():
+            cap.set(cv2.CAP_PROP_POS_FRAMES, st.session_state.frame_pos)
+            
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0: fps = 30
         frame_time = 1.0 / fps
@@ -343,6 +406,7 @@ with tab_monitor:
                     event.details
                 )
                 
+            # Get active zone for time-based updates (single lookup)
             hand = operator_pose.active_hand
             if hand is None:
                 for h in [operator_pose.left_hand, operator_pose.right_hand]:
@@ -354,13 +418,39 @@ with tab_monitor:
                 
             # 4. Display
             annotated = draw_overlay(frame, operator_pose, zone_manager)
-            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            video_placeholder.image(annotated_rgb, use_container_width=True)
             
-            # 5. UI Update
+            # Add play time to top right
+            current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
+            total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            if fps > 0:
+                current_time_sec = int(current_frame / fps)
+                total_time_sec = int(total_frames / fps)
+                time_str = f"{current_time_sec // 60:02d}:{current_time_sec % 60:02d} / {total_time_sec // 60:02d}:{total_time_sec % 60:02d}"
+                text_size = cv2.getTextSize(time_str, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+                text_x = annotated.shape[1] - text_size[0] - 20
+                cv2.rectangle(annotated, (text_x - 10, 15), (text_x + text_size[0] + 10, 25 + text_size[1]), (0, 0, 0), -1)
+                cv2.putText(annotated, time_str, (text_x, 20 + text_size[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+            
+            annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            video_placeholder.image(annotated_rgb, width="stretch")
+            
+            # 5. Error / Timeout checks
+            if state_machine.current_state == ProcessState.ERROR:
+                st.session_state.error_state = True
+                st.session_state.running = False
+                st.session_state.last_frame = annotated_rgb
+                st.session_state.frame_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                st.rerun()
+                
+            if state_machine.current_state == ProcessState.TIMEOUT_WARNING:
+                st.session_state.timeout_warning = True
+                st.session_state.running = False
+                st.session_state.last_frame = annotated_rgb
+                st.session_state.frame_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+                st.rerun()
+                
             cycle = state_machine.get_active_cycle()
             if not cycle and state_machine.total_completed > 0:
-                # Just show the last completed text
                 pass 
             
             update_ui(cycle)

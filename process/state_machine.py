@@ -4,8 +4,11 @@ Process State Machine - Simplified Sequence
 Enforces a strict, linear flow:
 1. IDLE
 2. ZONE_1_STARTED
-3. ZONE_2_COMPLETED
+3. ZONE_2_PLACED / ZONE_2_PICKED
 4. COMPLETED (Triggers when entering Zone 3)
+
+Includes timeout recovery: if a cycle is stuck for too long,
+transitions to TIMEOUT_WARNING state.
 """
 
 from enum import Enum
@@ -17,6 +20,8 @@ class ProcessState(Enum):
     ZONE_2_PLACED = "ZONE_2_PLACED"
     ZONE_2_PICKED = "ZONE_2_PICKED"
     COMPLETED = "COMPLETED"
+    ERROR = "ERROR"
+    TIMEOUT_WARNING = "TIMEOUT_WARNING"
 
 class PartCycle:
     def __init__(self, part_id):
@@ -27,23 +32,34 @@ class PartCycle:
         self.is_complete = False
 
 class ProcessStateMachine:
-    def __init__(self):
+    def __init__(self, cycle_timeout=30):
+        """
+        Args:
+            cycle_timeout: Seconds before a stuck cycle triggers a timeout warning
+        """
         self.current_state = ProcessState.IDLE
         self._cycle_counter = 0
         self.active_cycle = None
-        
         self.total_completed = 0
+        self.cycle_timeout = cycle_timeout
+        self.zone_2_placed_time = 0
+        self.exited_zone_2 = False
+        self.buffer_entry_y = None
         
     def reset(self):
         self.current_state = ProcessState.IDLE
         self.active_cycle = None
         self.zone_2_placed_time = 0
+        self.exited_zone_2 = False
+        self.buffer_entry_y = None
         
     def start_new_cycle(self):
         self._cycle_counter += 1
         self.active_cycle = PartCycle(self._cycle_counter)
         self.current_state = ProcessState.IDLE
         self.zone_2_placed_time = 0
+        self.exited_zone_2 = False
+        self.buffer_entry_y = None
         return self._cycle_counter
         
     def get_active_cycle(self):
@@ -67,6 +83,16 @@ class ProcessStateMachine:
 
         cycle = self.active_cycle
         
+        # If we're in TIMEOUT_WARNING, only allow reset via zone 1 (new cycle)
+        if cycle.state == ProcessState.TIMEOUT_WARNING:
+            if event_type == "HAND_ENTERED_ZONE_1":
+                self.start_new_cycle()
+                cycle = self.active_cycle
+                cycle.state = ProcessState.ZONE_1_STARTED
+                result["transition"] = True
+                result["new_state"] = ProcessState.ZONE_1_STARTED
+            return result
+        
         if event_type == "HAND_ENTERED_ZONE_1":
             if cycle.state == ProcessState.IDLE or cycle.is_complete:
                 if cycle.is_complete:
@@ -76,6 +102,11 @@ class ProcessStateMachine:
                 cycle.state = ProcessState.ZONE_1_STARTED
                 result["transition"] = True
                 result["new_state"] = ProcessState.ZONE_1_STARTED
+            elif cycle.state in [ProcessState.ZONE_2_PLACED, ProcessState.ZONE_2_PICKED]:
+                # Flow broken! Hand returned to Zone 1 without completing the cycle
+                cycle.state = ProcessState.ERROR
+                result["transition"] = True
+                result["new_state"] = ProcessState.ERROR
                 
         elif event_type == "HAND_ENTERED_ZONE_2":
             if cycle.state == ProcessState.ZONE_1_STARTED:
@@ -87,7 +118,7 @@ class ProcessStateMachine:
             elif cycle.state == ProcessState.ZONE_2_PLACED:
                 # Second time hand enters Zone 2
                 # Add a cooldown to prevent hand adjustments during placement from being counted as a Pick
-                if hasattr(self, 'zone_2_placed_time') and time.time() - self.zone_2_placed_time > 2.5:
+                if self.zone_2_placed_time > 0 and time.time() - self.zone_2_placed_time > 2.5:
                     cycle.state = ProcessState.ZONE_2_PICKED
                     result["transition"] = True
                     result["new_state"] = ProcessState.ZONE_2_PICKED
@@ -99,12 +130,12 @@ class ProcessStateMachine:
                     self.buffer_entry_y = details["y"]
                 
         elif event_type == "HAND_ENTERED_ZONE_3":
-            # Only allow completion if hand has picked up from Zone 2
-            if cycle.state == ProcessState.ZONE_2_PICKED:
+            # Only allow completion if hand has come from Zone 2
+            if cycle.state in [ProcessState.ZONE_2_PLACED, ProcessState.ZONE_2_PICKED]:
                 cycle.state = ProcessState.COMPLETED
                 cycle.is_complete = True
                 cycle.end_time = time.time()
-                self.exited_zone_2 = False # Reset for next cycle
+                self.exited_zone_2 = False
                 self.total_completed += 1
                 
                 result["transition"] = True
@@ -120,18 +151,29 @@ class ProcessStateMachine:
 
     def update(self, current_zone):
         """
-        Handle time-based transitions for cases where no events fire
-        (e.g., operator rests hand inside a zone without leaving it).
+        Handle time-based transitions:
+        1. Auto-advance from ZONE_2_PLACED to ZONE_2_PICKED after cooldown
+        2. Timeout recovery: if cycle is stuck too long, show warning
         """
         if not self.active_cycle:
             return
             
         cycle = self.active_cycle
         
-        # If operator rests hand in Zone 2 (never leaves it) for more than 2.5 seconds,
-        # we can assume the processing is done and they are now picking it up.
+        # Skip timeout checks for terminal states
+        if cycle.state in [ProcessState.COMPLETED, ProcessState.ERROR, ProcessState.TIMEOUT_WARNING]:
+            return
+        
+        # --- Auto-advance: operator rests hand in Zone 2 ---
         if cycle.state == ProcessState.ZONE_2_PLACED:
             if current_zone == "zone_2":
-                if hasattr(self, 'zone_2_placed_time') and time.time() - self.zone_2_placed_time > 2.5:
+                if self.zone_2_placed_time > 0 and time.time() - self.zone_2_placed_time > 2.5:
                     cycle.state = ProcessState.ZONE_2_PICKED
                     self.current_state = ProcessState.ZONE_2_PICKED
+
+        # --- Timeout recovery ---
+        if cycle.state != ProcessState.IDLE:
+            elapsed = time.time() - cycle.start_time
+            if elapsed > self.cycle_timeout:
+                cycle.state = ProcessState.TIMEOUT_WARNING
+                self.current_state = ProcessState.TIMEOUT_WARNING

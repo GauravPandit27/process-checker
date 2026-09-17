@@ -179,6 +179,10 @@ class PoseDetector:
 
     Detects the operator's pose keypoints, extracts wrist positions,
     and determines which zone their hands are operating in.
+    
+    IMPORTANT: This layer does NO debouncing. It reports the raw zone
+    for each wrist on every frame. All debouncing is handled by the
+    EventEngine (single source of truth for temporal filtering).
     """
 
     # COCO skeleton connections for drawing
@@ -203,14 +207,6 @@ class PoseDetector:
         self.confidence = confidence
         self.model = None
         self.operator = OperatorPose()
-
-        # Debounce: per-zone consecutive frame counts for each hand
-        self._zone_frame_counts = {
-            "left": {},   # zone_id -> consecutive_frames
-            "right": {},
-        }
-        self.debounce_frames = 3
-
         self._load_model()
 
     def _load_model(self):
@@ -251,6 +247,10 @@ class PoseDetector:
         self._parse_results(results, zone_manager)
         return self.operator
 
+    # Keep backward compatibility alias
+    def process_frame(self, frame, zone_manager=None):
+        return self.detect(frame, zone_manager)
+
     def _parse_results(self, results, zone_manager=None):
         """Parse YOLO-Pose results and update operator state."""
         self.operator.detected = False
@@ -287,64 +287,29 @@ class PoseDetector:
         lw = keypoints[KP_LEFT_WRIST]   # [x, y, conf]
         rw = keypoints[KP_RIGHT_WRIST]  # [x, y, conf]
 
-        # Determine zone for each wrist
-        lw_current_zone_id = None
-        rw_current_zone_id = None
+        # Determine zone for each wrist — NO debouncing, NO fingertip offset.
+        # Zone padding is handled by ZoneManager.get_zone_for_point().
+        # Debouncing is handled by EventEngine.
         lw_zone = None
         rw_zone = None
         
         if zone_manager and lw[2] >= MIN_KP_CONFIDENCE:
             zone = zone_manager.get_zone_for_point(lw[0], lw[1])
             if zone:
-                lw_current_zone_id = zone.zone_id
-                lw_zone = self._debounce_zone("left", zone.zone_id)
+                lw_zone = zone.zone_id
                 
         if zone_manager and rw[2] >= MIN_KP_CONFIDENCE:
             zone = zone_manager.get_zone_for_point(rw[0], rw[1])
             if zone:
-                rw_current_zone_id = zone.zone_id
-                rw_zone = self._debounce_zone("right", zone.zone_id)
+                rw_zone = zone.zone_id
 
-        # Reset debounce for zones no longer occupied (hand is not in ANY zone)
-        if lw_current_zone_id is None:
-            self._reset_debounce("left")
-        if rw_current_zone_id is None:
-            self._reset_debounce("right")
-
-        # Update hand states
+        # Update hand states with raw zone (no debounce filtering)
         self.operator.left_hand.update(lw[0], lw[1], lw[2], lw_zone)
         self.operator.right_hand.update(rw[0], rw[1], rw[2], rw_zone)
-
-    def _debounce_zone(self, hand_side, zone_id):
-        """
-        Debounce zone assignment: requires N consecutive frames in the same zone.
-
-        Returns:
-            zone_id if confirmed, None if still debouncing
-        """
-        counts = self._zone_frame_counts[hand_side]
-
-        # Increment count for this zone
-        counts[zone_id] = counts.get(zone_id, 0) + 1
-
-        # Reset counts for other zones
-        for zid in list(counts.keys()):
-            if zid != zone_id:
-                counts[zid] = 0
-
-        # Check if debounce threshold met
-        if counts[zone_id] >= self.debounce_frames:
-            return zone_id
-        return None
-
-    def _reset_debounce(self, hand_side):
-        """Reset all debounce counters for a hand."""
-        self._zone_frame_counts[hand_side].clear()
 
     def reset(self):
         """Reset all pose tracking state."""
         self.operator = OperatorPose()
-        self._zone_frame_counts = {"left": {}, "right": {}}
 
     def get_skeleton_points(self):
         """
