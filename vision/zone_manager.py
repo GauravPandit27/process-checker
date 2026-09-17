@@ -50,9 +50,10 @@ class ZoneManager:
     a detection falls in, and draws zone overlays on frames.
     """
 
-    def __init__(self, config_path=None):
+    def __init__(self, config_path=None, zone_padding=20):
         self.zones = {}
         self.config_path = config_path
+        self.zone_padding = zone_padding  # Pixels to expand zones outward for detection
         if config_path and os.path.exists(config_path):
             self.load_zones(config_path)
 
@@ -154,9 +155,35 @@ class ZoneManager:
                 color=color or (0, 255, 0)
             )
 
+    def _expand_polygon(self, points, padding):
+        """
+        Expand a convex polygon outward by `padding` pixels.
+        Uses centroid-based expansion: each vertex is pushed away from the center.
+        """
+        if len(points) < 3 or padding <= 0:
+            return points
+            
+        pts = np.array(points, dtype=np.float64)
+        centroid = pts.mean(axis=0)
+        
+        expanded = []
+        for pt in pts:
+            direction = pt - centroid
+            length = np.linalg.norm(direction)
+            if length > 0:
+                unit = direction / length
+                expanded.append(pt + unit * padding)
+            else:
+                expanded.append(pt)
+        
+        return np.array(expanded, dtype=np.int32)
+
     def get_zone_for_point(self, x, y):
         """
         Determine which zone a point belongs to.
+        
+        Uses zone_padding to expand zones outward before testing,
+        making detection more forgiving without changing the drawn boundaries.
 
         Returns:
             Zone object if point is in a zone, None otherwise
@@ -166,12 +193,26 @@ class ZoneManager:
             bz = self.zones["buffer_zone"]
             if len(bz.points) >= 3 and bz.contains_point(x, y):
                 return bz
-                
+        
+        # Check each zone with padding expansion
         for zone_id, zone in self.zones.items():
             if zone_id == "buffer_zone":
                 continue
-            if len(zone.points) >= 3 and zone.contains_point(x, y):
+            if len(zone.points) < 3:
+                continue
+                
+            # First try the exact zone boundary
+            if zone.contains_point(x, y):
                 return zone
+            
+            # Then try the padded (expanded) zone boundary
+            if self.zone_padding > 0:
+                expanded_pts = self._expand_polygon(zone.points, self.zone_padding)
+                expanded_contour = expanded_pts.reshape((-1, 1, 2))
+                result = cv2.pointPolygonTest(expanded_contour, (float(x), float(y)), False)
+                if result >= 0:
+                    return zone
+                    
         return None
 
     def get_zone_for_detection(self, detection):
