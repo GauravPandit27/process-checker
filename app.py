@@ -232,7 +232,7 @@ with tab_monitor:
         st.markdown("### 🎮 Controls")
         
         col_btn1, col_btn2 = st.columns(2)
-        if col_btn1.button("▶️ Start Stream", width="stretch", type="primary"):
+        if col_btn1.button("▶️ Start Stream", use_container_width=True, type="primary"):
             st.session_state.error_state = False
             st.session_state.timeout_warning = False
             st.session_state.frame_pos = 0
@@ -241,8 +241,18 @@ with tab_monitor:
             event_engine.reset()
             st.rerun()
             
-        if col_btn2.button("⏹️ Stop Stream", width="stretch"):
+        if col_btn2.button("⏹️ Stop Stream", use_container_width=True):
             st.session_state.running = False
+            st.rerun()
+            
+        # Highlight reset button if there's an error/warning
+        btn_type = "primary" if (st.session_state.error_state or st.session_state.timeout_warning) else "secondary"
+        if st.button("🔄 Reset System", use_container_width=True, type=btn_type):
+            st.session_state.error_state = False
+            st.session_state.timeout_warning = False
+            state_machine.reset()
+            event_engine.reset()
+            st.session_state.running = True
             st.rerun()
 
     with col_video:
@@ -251,28 +261,13 @@ with tab_monitor:
             if st.session_state.last_frame is not None:
                 error_frame = st.session_state.last_frame.copy()
                 cv2.putText(error_frame, "PROCESS BROKEN", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 8)
-                st.image(error_frame, width="stretch")
-                
-            if st.button("🔄 Manual Reset", type="primary", width="stretch"):
-                st.session_state.error_state = False
-                state_machine.reset()
-                event_engine.reset()
-                st.session_state.running = True
-                st.rerun()
-                
+                st.image(error_frame, use_column_width=True)
         elif st.session_state.timeout_warning:
             st.warning("⏰ TIMEOUT: Cycle has been stuck for over 30 seconds. The system may have lost track of the hand.", icon="⚠️")
             if st.session_state.last_frame is not None:
                 timeout_frame = st.session_state.last_frame.copy()
                 cv2.putText(timeout_frame, "TIMEOUT WARNING", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 165, 255), 8)
-                st.image(timeout_frame, width="stretch")
-                
-            if st.button("🔄 Reset & Continue", type="primary", width="stretch"):
-                st.session_state.timeout_warning = False
-                state_machine.reset()
-                event_engine.reset()
-                st.session_state.running = True
-                st.rerun()
+                st.image(timeout_frame, use_column_width=True)
         else:
             video_placeholder = st.empty()
 
@@ -374,6 +369,11 @@ with tab_monitor:
         cap = cv2.VideoCapture(video_path)
         if st.session_state.get("frame_pos", 0) > 0 and isinstance(video_path, str) and not video_path.isdigit():
             cap.set(cv2.CAP_PROP_POS_FRAMES, st.session_state.frame_pos)
+        
+        # Scale zones to match video resolution
+        vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        zone_manager.scale_zones_to_resolution(vid_w, vid_h)
             
         fps = cap.get(cv2.CAP_PROP_FPS)
         if fps <= 0: fps = 30

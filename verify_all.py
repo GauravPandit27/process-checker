@@ -42,6 +42,18 @@ def analyze_video(video_path, label):
     zone_manager = ZoneManager(os.path.join("config", "zones.json"), zone_padding=20)
     pose_detector = PoseDetector(model_path="yolov8n-pose.pt", confidence=0.35)
     
+    # Scale zones to match video resolution
+    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    zone_manager.scale_zones_to_resolution(vid_w, vid_h)
+    print(f"  Resolution: {vid_w}x{vid_h}, Scale: {zone_manager._current_scale}")
+    
+    # Print scaled zone bounds
+    for zid, z in zone_manager.zones.items():
+        if zid == "buffer_zone": continue
+        bx, by, bw, bh = cv2.boundingRect(z.points)
+        print(f"  {zid}: x=[{bx},{bx+bw}] y=[{by},{by+bh}]")
+    
     # We patch time.time() so that the State Machine and Event Engine use video time
     with patch('time.time', side_effect=mock_time):
         state_machine = ProcessStateMachine(cycle_timeout=30)
