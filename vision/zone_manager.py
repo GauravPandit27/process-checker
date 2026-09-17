@@ -54,6 +54,8 @@ class ZoneManager:
         self.zones = {}
         self.config_path = config_path
         self.zone_padding = zone_padding  # Pixels to expand zones outward for detection
+        self.reference_resolution = None  # (width, height) zones were drawn for
+        self._current_scale = (1.0, 1.0)  # Current scale factors applied
         if config_path and os.path.exists(config_path):
             self.load_zones(config_path)
 
@@ -63,8 +65,16 @@ class ZoneManager:
             with open(config_path, 'r') as f:
                 config = json.load(f)
 
+            # Read reference resolution if stored
+            if "reference_resolution" in config:
+                ref = config["reference_resolution"]
+                self.reference_resolution = (int(ref[0]), int(ref[1]))
+
             self.zones = {}
             for zone_key, zone_data in config.items():
+                # Skip non-zone keys like reference_resolution
+                if not isinstance(zone_data, dict) or "points" not in zone_data:
+                    continue
                 zone_id = zone_key  # e.g., "zone_1", "zone_2", "zone_3"
                 zone = Zone(
                     zone_id=zone_id,
@@ -74,48 +84,104 @@ class ZoneManager:
                 )
                 self.zones[zone_id] = zone
 
-            if "zone_2" in self.zones and "zone_3" in self.zones:
-                z2_pts = self.zones["zone_2"].points
-                z3_pts = self.zones["zone_3"].points
-                if len(z2_pts) > 0 and len(z3_pts) > 0:
-                    z2_x, z2_y, z2_w, z2_h = cv2.boundingRect(z2_pts)
-                    z3_x, z3_y, z3_w, z3_h = cv2.boundingRect(z3_pts)
-                    
-                    z2_max_y = z2_y + z2_h
-                    z3_max_y = z3_y + z3_h
-                    
-                    if z2_y > z3_max_y:
-                        y_top = z3_max_y
-                        y_bottom = z2_y
-                    else:
-                        y_top = z2_max_y
-                        y_bottom = z3_y
-                        
-                    if y_bottom - y_top < 5:
-                        mid_y = (y_top + y_bottom) // 2
-                        y_top = mid_y - 10
-                        y_bottom = mid_y + 10
-                        
-                    x_min = min(z2_x, z3_x)
-                    x_max = max(z2_x + z2_w, z3_x + z3_w)
-                    
-                    buffer_points = [
-                        [int(x_min), int(y_top)],
-                        [int(x_max), int(y_top)],
-                        [int(x_max), int(y_bottom)],
-                        [int(x_min), int(y_bottom)]
-                    ]
-                    
-                    self.zones["buffer_zone"] = Zone(
-                        zone_id="buffer_zone",
-                        name="Buffer Zone",
-                        points=buffer_points,
-                        color=(200, 100, 200)
-                    )
+            # Build buffer zone between zone_2 and zone_3
+            self._build_buffer_zone()
 
             self.config_path = config_path
+            self._current_scale = (1.0, 1.0)
         except Exception as e:
             raise RuntimeError(f"Failed to load zone config from '{config_path}': {e}")
+
+    def _build_buffer_zone(self):
+        """Create a buffer zone between zone_2 and zone_3."""
+        if "zone_2" not in self.zones or "zone_3" not in self.zones:
+            return
+            
+        z2_pts = self.zones["zone_2"].points
+        z3_pts = self.zones["zone_3"].points
+        if len(z2_pts) == 0 or len(z3_pts) == 0:
+            return
+            
+        z2_x, z2_y, z2_w, z2_h = cv2.boundingRect(z2_pts)
+        z3_x, z3_y, z3_w, z3_h = cv2.boundingRect(z3_pts)
+        
+        z2_max_y = z2_y + z2_h
+        z3_max_y = z3_y + z3_h
+        
+        if z2_y > z3_max_y:
+            y_top = z3_max_y
+            y_bottom = z2_y
+        else:
+            y_top = z2_max_y
+            y_bottom = z3_y
+            
+        if y_bottom - y_top < 5:
+            mid_y = (y_top + y_bottom) // 2
+            y_top = mid_y - 10
+            y_bottom = mid_y + 10
+            
+        x_min = min(z2_x, z3_x)
+        x_max = max(z2_x + z2_w, z3_x + z3_w)
+        
+        buffer_points = [
+            [int(x_min), int(y_top)],
+            [int(x_max), int(y_top)],
+            [int(x_max), int(y_bottom)],
+            [int(x_min), int(y_bottom)]
+        ]
+        
+        self.zones["buffer_zone"] = Zone(
+            zone_id="buffer_zone",
+            name="Buffer Zone",
+            points=buffer_points,
+            color=(200, 100, 200)
+        )
+
+    def scale_zones_to_resolution(self, target_width, target_height):
+        """
+        Scale all zone coordinates to match a different video resolution.
+        
+        Uses the stored reference_resolution to compute scale factors.
+        If no reference_resolution is stored, does nothing.
+        
+        Args:
+            target_width: Width of the video being processed
+            target_height: Height of the video being processed
+        """
+        if not self.reference_resolution:
+            return
+            
+        ref_w, ref_h = self.reference_resolution
+        
+        # If resolution matches, no scaling needed
+        if target_width == ref_w and target_height == ref_h:
+            self._current_scale = (1.0, 1.0)
+            return
+            
+        scale_x = target_width / ref_w
+        scale_y = target_height / ref_h
+        self._current_scale = (scale_x, scale_y)
+        
+        # Reload original zones first (to avoid cumulative scaling)
+        if self.config_path:
+            with open(self.config_path, 'r') as f:
+                config = json.load(f)
+            
+            for zone_id, zone in self.zones.items():
+                if zone_id == "buffer_zone":
+                    continue
+                if zone_id in config and isinstance(config[zone_id], dict):
+                    original_pts = config[zone_id].get("points", [])
+                    scaled_pts = [
+                        [int(pt[0] * scale_x), int(pt[1] * scale_y)]
+                        for pt in original_pts
+                    ]
+                    zone.update_points(scaled_pts)
+            
+            # Rebuild buffer zone with scaled coordinates
+            if "buffer_zone" in self.zones:
+                del self.zones["buffer_zone"]
+            self._build_buffer_zone()
 
     def save_zones(self, config_path=None):
         """Save current zone definitions to a JSON config file."""
