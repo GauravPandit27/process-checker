@@ -245,7 +245,7 @@ with tab_monitor:
         # Manual Reset button — clears warnings and restarts process
         if st.button("🔄 Reset & Continue", use_container_width=True):
             state_machine.manual_reset()
-            event_engine.reset()
+            # Removed event_engine.reset() here so we don't re-trigger the event for the zone the hand is currently resting in
             st.session_state.running = True
             st.rerun()
 
