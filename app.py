@@ -74,6 +74,31 @@ st.markdown("""
         text-align: center;
         color: #3498db;
     }
+    
+    .warning-box {
+        padding: 20px;
+        border-radius: 10px;
+        margin: 10px 0;
+        font-size: 18px;
+        font-weight: bold;
+        text-align: center;
+        border: 3px solid #e74c3c;
+        background-color: #c0392b;
+        color: white;
+        animation: warning-pulse 0.5s infinite alternate;
+    }
+    
+    @keyframes warning-pulse {
+        from { box-shadow: 0 0 10px rgba(231, 76, 60, 0.4); }
+        to { box-shadow: 0 0 30px rgba(231, 76, 60, 0.8); }
+    }
+    
+    .status-warning {
+        background-color: #e74c3c;
+        border-color: #c0392b;
+        color: white;
+        animation: warning-pulse 0.5s infinite alternate;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -113,6 +138,7 @@ st.title("🏭 Live Process Monitor")
 
 video_options = {
     "Default Video (WhatsApp)": "WhatsApp Video 2026-09-10 at 4.04.34 PM.mp4",
+    "Mistake Test Video (Sep 15)": "WhatsApp Video 2026-09-15 at 2.23.34 PM.mp4",
     "Demo Video": "../demo.mp4"
 }
 selected_video = st.selectbox("Select Camera Feed", list(video_options.keys()))
@@ -198,8 +224,11 @@ with tab_monitor:
         st_process = st.empty()
         st_output = st.empty()
         
-        # Controls
+        # Warning area
         st.markdown("---")
+        warning_placeholder = st.empty()
+        
+        # Controls
         st.markdown("### 🎮 Controls")
         
         col_btn1, col_btn2 = st.columns(2)
@@ -211,6 +240,13 @@ with tab_monitor:
             
         if col_btn2.button("⏹️ Stop Stream", use_container_width=True):
             st.session_state.running = False
+            st.rerun()
+        
+        # Manual Reset button — clears warnings and restarts process
+        if st.button("🔄 Reset & Continue", use_container_width=True):
+            state_machine.manual_reset()
+            event_engine.reset()
+            st.session_state.running = True
             st.rerun()
 
     with col_video:
@@ -261,6 +297,21 @@ with tab_monitor:
         return annotated
 
     def update_ui(cycle):
+        # Handle warning state
+        if state_machine.is_warning:
+            cycle_header.markdown('<div class="cycle-header" style="color:#e74c3c;">🚨 PROCESS WARNING</div>', unsafe_allow_html=True)
+            warning_placeholder.markdown(
+                f'<div class="warning-box">{state_machine.warning_reason}<br><br>'
+                f'Press <b>🔄 Reset &amp; Continue</b> to resume</div>',
+                unsafe_allow_html=True
+            )
+            st_input.markdown('<div class="status-box status-warning">📥 Zone 1 — HALTED</div>', unsafe_allow_html=True)
+            st_process.markdown('<div class="status-box status-warning">⚙️ Zone 2 — HALTED</div>', unsafe_allow_html=True)
+            st_output.markdown('<div class="status-box status-warning">📤 Zone 3 — HALTED</div>', unsafe_allow_html=True)
+            return
+        else:
+            warning_placeholder.empty()
+
         if not cycle:
             cycle_header.markdown('<div class="cycle-header">Waiting for Hand in Zone 1...</div>', unsafe_allow_html=True)
             st_input.markdown('<div class="status-box">📥 Zone 1 Input</div>', unsafe_allow_html=True)
@@ -299,6 +350,10 @@ with tab_monitor:
             st_output.markdown('<div class="status-box status-active">📤 Waiting for Zone 3...</div>', unsafe_allow_html=True)
         else:
             st_output.markdown('<div class="status-box">📤 Zone 3 Output</div>', unsafe_allow_html=True)
+
+    # Show warning state on page load if one is active
+    if state_machine.is_warning:
+        update_ui(state_machine.get_active_cycle())
 
     # -------------------------------------------------------------------
     # Main Loop
@@ -364,6 +419,12 @@ with tab_monitor:
                 pass 
             
             update_ui(cycle)
+            
+            # 6. Check for warning — pause the stream
+            if state_machine.is_warning:
+                st.session_state.running = False
+                cap.release()
+                st.rerun()
                 
             # 6. Throttle to normal playback speed
             process_time = time.time() - loop_start

@@ -161,17 +161,19 @@ class ZoneManager:
         Returns:
             Zone object if point is in a zone, None otherwise
         """
-        # Prioritize buffer zone if there is overlap
-        if "buffer_zone" in self.zones:
-            bz = self.zones["buffer_zone"]
-            if len(bz.points) >= 3 and bz.contains_point(x, y):
-                return bz
-                
+        # Check named zones FIRST (zone_1, zone_2, zone_3)
         for zone_id, zone in self.zones.items():
             if zone_id == "buffer_zone":
                 continue
             if len(zone.points) >= 3 and zone.contains_point(x, y):
                 return zone
+
+        # Buffer zone is a fallback for points between named zones
+        if "buffer_zone" in self.zones:
+            bz = self.zones["buffer_zone"]
+            if len(bz.points) >= 3 and bz.contains_point(x, y):
+                return bz
+
         return None
 
     def get_zone_for_detection(self, detection):
