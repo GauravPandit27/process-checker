@@ -149,7 +149,15 @@ with tab_draw:
             "- **Top Rectangle** = Zone 3 (Output/Drop-off)")
     
     bg_image = get_first_frame(st.session_state.video_path)
-    pil_image = Image.fromarray(bg_image)
+    
+    # Scale canvas to fit nicely on screen without scrolling
+    max_canvas_h = 600
+    canvas_scale = min(1.0, max_canvas_h / bg_image.shape[0])
+    c_width = int(bg_image.shape[1] * canvas_scale)
+    c_height = int(bg_image.shape[0] * canvas_scale)
+    
+    # Resize image for the canvas background
+    pil_image = Image.fromarray(cv2.resize(bg_image, (c_width, c_height)))
     
     canvas_result = st_canvas(
         fill_color="rgba(255, 165, 0, 0.3)",
@@ -157,8 +165,8 @@ with tab_draw:
         stroke_color="#ff0000",
         background_image=pil_image,
         update_streamlit=True,
-        height=bg_image.shape[0] // 2,
-        width=bg_image.shape[1] // 2,
+        height=c_height,
+        width=c_width,
         drawing_mode="rect",
         key="canvas",
     )
@@ -171,8 +179,9 @@ with tab_draw:
                 # Zone 1 is at the bottom (highest Y), Zone 3 is at the top (lowest Y)
                 objects = sorted(objects, key=lambda x: x["top"], reverse=True)
                 
-                scale_x = bg_image.shape[1] / (bg_image.shape[1] // 2)
-                scale_y = bg_image.shape[0] / (bg_image.shape[0] // 2)
+                # Scale from canvas coordinates back to original video resolution
+                scale_x = bg_image.shape[1] / c_width
+                scale_y = bg_image.shape[0] / c_height
                 
                 zone_config_path = os.path.join("config", "zones.json")
                 try:
@@ -199,6 +208,10 @@ with tab_draw:
                     if zone_key not in zone_config:
                         zone_config[zone_key] = {"color": [0,255,0], "name": f"Zone {i+1}"}
                     zone_config[zone_key]["points"] = pts
+
+                # Save the video's native resolution so the zone manager knows 
+                # what resolution these coordinates were drawn for.
+                zone_config["reference_resolution"] = [bg_image.shape[1], bg_image.shape[0]]
 
                 with open(zone_config_path, 'w') as f:
                     json.dump(zone_config, f, indent=4)
@@ -261,13 +274,21 @@ with tab_monitor:
             if st.session_state.last_frame is not None:
                 error_frame = st.session_state.last_frame.copy()
                 cv2.putText(error_frame, "PROCESS BROKEN", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 8)
-                st.image(error_frame, use_column_width=True)
+                
+                h, w = error_frame.shape[:2]
+                if h > 600:
+                    error_frame = cv2.resize(error_frame, (int(w * (600 / h)), 600))
+                st.image(error_frame)
         elif st.session_state.timeout_warning:
             st.warning("⏰ TIMEOUT: Cycle has been stuck for over 30 seconds. The system may have lost track of the hand.", icon="⚠️")
             if st.session_state.last_frame is not None:
                 timeout_frame = st.session_state.last_frame.copy()
                 cv2.putText(timeout_frame, "TIMEOUT WARNING", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 165, 255), 8)
-                st.image(timeout_frame, use_column_width=True)
+                
+                h, w = timeout_frame.shape[:2]
+                if h > 600:
+                    timeout_frame = cv2.resize(timeout_frame, (int(w * (600 / h)), 600))
+                st.image(timeout_frame)
         else:
             video_placeholder = st.empty()
 
@@ -432,7 +453,16 @@ with tab_monitor:
                 cv2.putText(annotated, time_str, (text_x, 20 + text_size[1]), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
             
             annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            video_placeholder.image(annotated_rgb, width="stretch")
+            
+            # Bound display height to prevent vertical scrolling
+            max_disp_h = 600
+            h, w = annotated_rgb.shape[:2]
+            if h > max_disp_h:
+                scale = max_disp_h / h
+                disp_w = int(w * scale)
+                annotated_rgb = cv2.resize(annotated_rgb, (disp_w, max_disp_h))
+                
+            video_placeholder.image(annotated_rgb)
             
             # 5. Error / Timeout checks
             if state_machine.current_state == ProcessState.ERROR:
